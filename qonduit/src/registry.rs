@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use crate::command::Command;
 use crate::command::CommandHandler;
+use crate::event::{Event, EventHandler};
 use crate::query::Query;
 use crate::query::QueryHandler;
-use crate::registry::wrapper::CommandHandlerWrapper;
 use crate::registry::wrapper::QueryHandlerWrapper;
+use crate::registry::wrapper::{CommandHandlerWrapper, EventHandlerWrapper};
 
 /// The `CommandHandlerRegistry` manages associations between command types and their handlers.
 ///
@@ -252,34 +253,184 @@ impl Debug for QueryHandlerRegistry {
     }
 }
 
+#[derive(Default)]
+pub struct EventHandlerRegistry {
+    #[doc(hidden)]
+    pub(crate) handlers: HashMap<TypeId, Vec<Arc<dyn EventHandlerWrapper>>>,
+}
+
+/// A registry that stores lists of event handlers keyed by concrete event type.
+///
+/// Unlike command/query registries (which hold a single handler per type),
+/// the event registry supports *fan‑out*: multiple handlers can be registered
+/// for the same event type. When an event is dispatched, each registered handler
+/// is invoked sequentially.
+///
+/// Typical usage is to:
+/// 1. Create a registry
+/// 2. Register one or more handlers for each event type
+/// 3. Construct an [`EventBus`](crate::event::EventBus) with the registry
+///
+/// # Example
+/// ```
+/// use qonduit::async_trait;
+/// use qonduit::event::{Event, EventHandler, EventBus};
+/// use qonduit::registry::EventHandlerRegistry;
+///
+/// #[derive(Clone, Debug)]
+/// struct UserRegisteredEvent { user_id: u64 }
+/// impl Event for UserRegisteredEvent {}
+///
+/// struct SendWelcomeEmail;
+/// struct UpdateProjection;
+///
+/// #[async_trait]
+/// impl EventHandler<UserRegisteredEvent> for SendWelcomeEmail {
+///     async fn handle(&self, _e: UserRegisteredEvent)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         // Send a welcome email
+///         Ok(())
+///     }
+/// }
+///
+/// #[async_trait]
+/// impl EventHandler<UserRegisteredEvent> for UpdateProjection {
+///     async fn handle(&self, _e: UserRegisteredEvent)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         // Update read model / projection
+///         Ok(())
+///     }
+/// }
+///
+/// let mut reg = EventHandlerRegistry::new();
+/// reg.register::<UserRegisteredEvent>(SendWelcomeEmail);
+/// reg.register::<UserRegisteredEvent>(UpdateProjection);
+///
+/// let bus = EventBus::new(reg);
+/// # drop(bus);
+/// ```
+impl EventHandlerRegistry {
+    /// Creates an empty event handler registry.
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    /// Registers an event handler for the event type `E`.
+    ///
+    /// Multiple handlers may be registered for the same event type; they will
+    /// be invoked in the order of registration.
+    ///
+    /// # Type Parameters
+    /// * `E` - Event type the handler reacts to.
+    ///
+    /// # Example
+    /// ```
+    /// # use qonduit::async_trait;
+    /// # use qonduit::event::{Event, EventHandler};
+    /// # use qonduit::registry::EventHandlerRegistry;
+    /// #[derive(Clone, Debug)]
+    /// struct SomethingHappened;
+    /// impl Event for SomethingHappened {}
+    ///
+    /// struct Audit;
+    ///
+    /// #[async_trait]
+    /// impl EventHandler<SomethingHappened> for Audit {
+    ///     async fn handle(&self, _e: SomethingHappened)
+    ///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let mut registry = EventHandlerRegistry::new();
+    /// registry.register::<SomethingHappened>(Audit);
+    /// ```
+    pub fn register<E: Event>(&mut self, handler: impl EventHandler<E> + 'static) {
+        let handlers = self.handlers.entry(TypeId::of::<E>()).or_default();
+        handlers.push(Arc::new(Box::new(handler) as Box<dyn EventHandler<E>>));
+    }
+
+    /// Returns all handlers registered for the event type `E`.
+    ///
+    /// If no handlers are registered for `E`, an empty vector is returned.
+    pub fn get_handlers<E: Event>(&self) -> Vec<Arc<dyn EventHandler<E>>> {
+        self.handlers
+            .get(&TypeId::of::<E>())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|handler| Arc::new(handler) as Arc<dyn EventHandler<E>>)
+            .collect()
+    }
+}
+
+impl Debug for EventHandlerRegistry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FormatterResult {
+        f.debug_struct("EventHandlerRegistry").finish()
+    }
+}
+
 #[doc(hidden)]
 mod wrapper {
+    //! Internal type-erasure layer.
+    //!
+    //! The public registries store handlers behind trait objects without
+    //! exposing their generic type parameters. To achieve this, we:
+    //! 1. Box each concrete handler (e.g. `Box<dyn CommandHandler<C>>`)
+    //! 2. Upcast it to a type‑erased wrapper trait object (`CommandHandlerWrapper`)
+    //! 3. On dispatch, pass boxed `dyn Any` values, then downcast back to the
+    //!    concrete command/query/event type.
+    //!
+    //! This allows storing heterogeneous handlers in homogeneous maps keyed
+    //! by `TypeId` while keeping the outer API strongly typed.
+
     use std::any::Any;
+    use std::error::Error;
     use std::sync::Arc;
 
     use crate::async_trait;
     use crate::command::Command;
     use crate::command::CommandHandler;
+    use crate::event::{Event, EventHandler};
     use crate::query::Query;
     use crate::query::QueryHandler;
 
+    /// Type-erased asynchronous executor for a concrete `CommandHandler<C>`.
     #[async_trait]
     pub trait CommandHandlerWrapper: Send + Sync {
+        /// Accepts a boxed `Any` value that must be a `C`, executes the handler,
+        /// and returns the boxed result (`Result<C::Response, C::Error>` as `Any`).
         async fn execute(&self, command: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
     }
 
+    /// Type-erased asynchronous executor for a concrete `QueryHandler<Q>`.
     #[async_trait]
     pub trait QueryHandlerWrapper: Send + Sync {
         async fn execute(&self, query: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
     }
 
+    /// Type-erased asynchronous executor for a concrete `EventHandler<E>`.
+    #[async_trait]
+    pub trait EventHandlerWrapper: Send + Sync {
+        async fn execute(&self, event: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
+    }
+
+    // -----------------------
+    // Concrete -> Wrapper impl
+    // -----------------------
+
     #[async_trait]
     impl<C: Command> CommandHandlerWrapper for Box<dyn CommandHandler<C>> {
         async fn execute(&self, command: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
+            // Downcast the erased box to the concrete command type.
             let command = *command
                 .downcast::<C>()
                 .expect("Cannot downcast command to correct type");
+            // Delegate to the real handler.
             let result = self.handle(command).await;
+            // Re-box the result for the outer layer.
             Box::new(result) as Box<dyn Any + Send>
         }
     }
@@ -296,10 +447,31 @@ mod wrapper {
     }
 
     #[async_trait]
+    impl<E: Event> EventHandlerWrapper for Box<dyn EventHandler<E>> {
+        async fn execute(&self, event: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
+            let event = *event
+                .downcast::<E>()
+                .expect("Cannot downcast event to correct type");
+            let result = self.handle(event).await;
+            Box::new(result) as Box<dyn Any + Send>
+        }
+    }
+
+    // -------------------------------------------
+    // Wrapper trait objects re‑implement handlers
+    // -------------------------------------------
+    //
+    // We now implement the *public* handler traits for `Arc<dyn *_Wrapper>` so the
+    // registries can hand out objects that still satisfy `CommandHandler<C>`,
+    // `QueryHandler<Q>`, or `EventHandler<E>` while internally delegating through
+    // the erased wrapper interface.
+
+    #[async_trait]
     impl<C: Command> CommandHandler<C> for Arc<dyn CommandHandlerWrapper> {
         async fn handle(&self, command: C) -> Result<C::Response, C::Error> {
-            let result = self.execute(Box::new(command)).await;
-            *result
+            let result_any = self.execute(Box::new(command)).await;
+            // The inner boxed value is `Result<C::Response, C::Error>` stored as Any.
+            *result_any
                 .downcast()
                 .expect("Cannot downcast command response to correct type")
         }
@@ -308,10 +480,20 @@ mod wrapper {
     #[async_trait]
     impl<Q: Query> QueryHandler<Q> for Arc<dyn QueryHandlerWrapper> {
         async fn handle(&self, query: Q) -> Result<Q::Response, Q::Error> {
-            let result = self.execute(Box::new(query)).await;
-            *result
+            let result_any = self.execute(Box::new(query)).await;
+            *result_any
                 .downcast()
                 .expect("Cannot downcast query response to correct type")
+        }
+    }
+
+    #[async_trait]
+    impl<E: Event> EventHandler<E> for Arc<dyn EventHandlerWrapper> {
+        async fn handle(&self, event: E) -> Result<(), Box<dyn Error + Send + Sync>> {
+            let result_any = self.execute(Box::new(event)).await;
+            *result_any
+                .downcast()
+                .expect("Cannot downcast event handle result to correct type")
         }
     }
 }

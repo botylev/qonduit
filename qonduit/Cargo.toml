@@ -13,10 +13,10 @@ categories = ["asynchronous", "concurrency"]
 authors = ["Iurii Botylev <botylev@protonmail.com"]
 
 [dependencies]
-async-trait = "0.1.88"
+async-trait = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1.44.1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [features]
 default = []

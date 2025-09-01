@@ -10,10 +10,12 @@ Qonduit is a Rust implementation of the Command Query Responsibility Segregation
 
 ## Features
 
-- **Command Handling**: Easily define commands that change the state of your system.
-- **Query Handling**: Define queries that retrieve data without modifying the state.
-- **Handler Registration**: Register command and query handlers using convenient macros.
-- **Async Support**: Fully asynchronous handling of commands and queries using `async_trait`.
+- **Command Handling**: Define commands that change the state of your system.
+- **Query Handling**: Retrieve data without mutating state.
+- **Event Handling (Fan-out)**: Publish immutable domain events to multiple handlers (e.g. projections, notifications).
+- **Handler Registration Macros**: `command_bus!`, `query_bus!`, `event_bus!`, and matching `*_registry!` helpers.
+- **Async Support**: Fully asynchronous handling via `async_trait`.
+- **Lightweight & Type-Safe**: Minimal abstractions over strongly typed handlers.
 
 ## Installation
 
@@ -112,6 +114,65 @@ async fn main() {
     }
 }
 ```
+ 
+## Event System
+
+The event system lets you broadcast immutable domain events to multiple handlers (fan‑out).
+Each handler receives a cloned copy of the event and executes sequentially.
+
+Example:
+
+```rust
+use qonduit::async_trait;
+use qonduit::event::{Event, EventHandler};
+use qonduit::event_bus;
+
+// Define an event
+#[derive(Clone, Debug)]
+struct ProductCreated {
+    id: u64,
+    name: String,
+}
+impl Event for ProductCreated {}
+
+// First handler
+struct LogHandler;
+#[async_trait]
+impl EventHandler<ProductCreated> for LogHandler {
+    async fn handle(&self, e: ProductCreated)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    {
+        println!("[log] product created {}", e.id);
+        Ok(())
+    }
+}
+
+// Second handler
+struct ProjectionHandler;
+#[async_trait]
+impl EventHandler<ProductCreated> for ProjectionHandler {
+    async fn handle(&self, e: ProductCreated)
+        -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    {
+        println!("[projection] updating read model for {}", e.id);
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build an EventBus with two handlers for the same event type
+    let bus = event_bus! {
+        ProductCreated => LogHandler,
+        ProductCreated => ProjectionHandler,
+    };
+
+    bus.dispatch(ProductCreated { id: 1, name: "Keyboard".into() }).await?;
+    Ok(())
+}
+```
+
+See the `examples/event.rs` example for a more complete version (including manual registry construction).
 
 ## Documentation
 
