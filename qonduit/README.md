@@ -23,7 +23,7 @@ Add `qonduit` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-qonduit = "0.1.0"
+qonduit = "0.2.0"
 ```
 
 ## Usage
