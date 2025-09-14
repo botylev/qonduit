@@ -6,7 +6,7 @@ edition = "2024"
 
 [dev-dependencies]
 qonduit = { path = "../qonduit", features = ["macros"] }
-tokio = { version = "1.44.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [[example]]
 name = "command"
@@ -15,3 +15,7 @@ path = "command.rs"
 [[example]]
 name = "query"
 path = "query.rs"
+
+[[example]]
+name = "event"
+path = "event.rs"

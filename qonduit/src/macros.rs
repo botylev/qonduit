@@ -491,3 +491,174 @@ macro_rules! query_registry {
             query_handler_registry
         }};
     }
+
+/// A macro for initializing an [`EventBus`](crate::event::EventBus) instance with registered handlers.
+///
+/// This macro mirrors the ergonomics of [`command_bus!`] and [`query_bus!`], providing
+/// a concise way to construct an `EventBus` and register one or more event handlers
+/// (supporting fan‑out).
+///
+/// # Usage
+///
+/// The macro supports three invocation forms:
+///
+/// 1. **Empty invocation** – creates an `EventBus` with an empty registry:
+/// ```
+/// use qonduit::event_bus;
+/// let bus = event_bus! {};
+/// # drop(bus);
+/// ```
+///
+/// 2. **Handlers only** – relies on type inference (each handler's implemented `EventHandler<E>`
+/// trait determines the event type):
+/// ```
+/// use qonduit::{async_trait, event_bus};
+/// use qonduit::event::{Event, EventHandler};
+///
+/// #[derive(Clone, Debug)]
+/// struct UserRegistered { id: u64 }
+/// impl Event for UserRegistered {}
+///
+/// struct Logger;
+///
+/// #[async_trait]
+/// impl EventHandler<UserRegistered> for Logger {
+///     async fn handle(&self, e: UserRegistered)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         # let _ = e;
+///         Ok(())
+///     }
+/// }
+///
+/// let bus = event_bus! {
+///     Logger,
+/// };
+/// # drop(bus);
+/// ```
+///
+/// 3. **Explicit event => handler pairs** – declare the mapping explicitly:
+/// ```
+/// use qonduit::{async_trait, event_bus};
+/// use qonduit::event::{Event, EventHandler};
+///
+/// #[derive(Clone, Debug)]
+/// struct OrderPaid { id: u64 }
+/// impl Event for OrderPaid {}
+///
+/// struct IndexUpdater;
+///
+/// #[async_trait]
+/// impl EventHandler<OrderPaid> for IndexUpdater {
+///     async fn handle(&self, _e: OrderPaid)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         Ok(())
+///     }
+/// }
+///
+/// let bus = event_bus! {
+///     OrderPaid => IndexUpdater,
+/// };
+/// # drop(bus);
+/// ```
+///
+/// Multiple handlers can be registered for the same event type; they will be
+/// invoked sequentially in registration order when the event is dispatched.
+#[macro_export]
+macro_rules! event_bus {
+        () => {{
+            qonduit::event::EventBus::new(qonduit::registry::EventHandlerRegistry::new())
+        }};
+        ($($handler:expr),*$(,)?) => {{
+            let mut event_handler_registry = qonduit::registry::EventHandlerRegistry::new();
+            $(event_handler_registry.register($handler);)*
+            qonduit::event::EventBus::new(event_handler_registry)
+        }};
+        ($($event:ty => $handler:expr),*$(,)?) => {{
+            let mut event_handler_registry = qonduit::registry::EventHandlerRegistry::new();
+            $(event_handler_registry.register::<$event>($handler);)*
+            qonduit::event::EventBus::new(event_handler_registry)
+        }};
+    }
+
+/// A macro for initializing an [`EventHandlerRegistry`](crate::registry::EventHandlerRegistry).
+///
+/// Similar to [`command_registry!`] / [`query_registry!`], this macro lets you
+/// register multiple event handlers (including multiple handlers for the same
+/// event type) in a compact form.
+///
+/// # Usage
+///
+/// 1. **Empty:**
+/// ```
+/// use qonduit::event_registry;
+/// let registry = event_registry! {};
+/// # drop(registry);
+/// ```
+///
+/// 2. **Handlers only (type inference):**
+/// ```
+/// use qonduit::{async_trait, event_registry};
+/// use qonduit::event::{Event, EventHandler};
+///
+/// #[derive(Clone, Debug)]
+/// struct ProductCreated { id: u64 }
+/// impl Event for ProductCreated {}
+///
+/// struct Log;
+///
+/// #[async_trait]
+/// impl EventHandler<ProductCreated> for Log {
+///     async fn handle(&self, _e: ProductCreated)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         Ok(())
+///     }
+/// }
+///
+/// let registry = event_registry! {
+///     Log,
+/// };
+/// # drop(registry);
+/// ```
+///
+/// 3. **Explicit event => handler pairs:**
+/// ```
+/// use qonduit::{async_trait, event_registry};
+/// use qonduit::event::{Event, EventHandler};
+///
+/// #[derive(Clone, Debug)]
+/// struct InventoryLow { sku: String, remaining: u32 }
+/// impl Event for InventoryLow {}
+///
+/// struct Notify;
+///
+/// #[async_trait]
+/// impl EventHandler<InventoryLow> for Notify {
+///     async fn handle(&self, _e: InventoryLow)
+///         -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///         Ok(())
+///     }
+/// }
+///
+/// let registry = event_registry! {
+///     InventoryLow => Notify,
+/// };
+/// # drop(registry);
+/// ```
+///
+/// Use this macro when you want to pass a prepared registry to `EventBus::new`.
+#[macro_export]
+macro_rules! event_registry {
+        () => {{
+            qonduit::registry::EventHandlerRegistry::new()
+        }};
+        ($($handler:expr),*$(,)?) => {{
+            let mut event_handler_registry = qonduit::registry::EventHandlerRegistry::new();
+            $(event_handler_registry.register($handler);)*
+            event_handler_registry
+        }};
+        ($($event:ty => $handler:expr),*$(,)?) => {{
+            let mut event_handler_registry = qonduit::registry::EventHandlerRegistry::new();
+            $(event_handler_registry.register::<$event>($handler);)*
+            event_handler_registry
+        }};
+    }
